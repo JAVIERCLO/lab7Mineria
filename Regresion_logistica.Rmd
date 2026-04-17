@@ -1,0 +1,52 @@
+---
+title: "Regresión logística"
+output: html_notebook
+---
+
+```{r carga de datos}
+load("listings_modificado.RData")
+```
+
+```{r librerias}
+
+```
+
+```{r separacion de datos train/test}
+set.seed(123)
+
+muestra_idx <- sample(1:nrow(listings), size = 10000)
+muestra <- listings[muestra_idx, ]
+
+n <- nrow(muestra)
+train_idx <- sample(1:n, size = 0.7 * n)
+
+train <- muestra[train_idx, ]
+test <- muestra[-train_idx, ]
+```
+
+```{r variable catrgorica de precio}
+cuts <- quantile(train$price, probs = c(0.33, 0.66), na.rm = TRUE)
+
+train$price_cat <- cut(train$price,
+                       breaks = c(-Inf, cuts[1], cuts[2], Inf),
+                       labels = c("Economica", "Intermedia", "Cara"))
+
+test$price_cat <- cut(test$price,
+                      breaks = c(-Inf, cuts[1], cuts[2], Inf),
+                      labels = c("Economica", "Intermedia", "Cara"))
+```
+
+```{r variables dicotómicas}
+# TRAIN
+train$econ <- ifelse(train$price_cat == "Economica", 1, 0)
+train$inter <- ifelse(train$price_cat == "Intermedia", 1, 0)
+train$cara <- ifelse(train$price_cat == "Cara", 1, 0)
+
+# TEST
+test$econ <- ifelse(test$price_cat == "Economica", 1, 0)
+test$inter <- ifelse(test$price_cat == "Intermedia", 1, 0)
+test$cara <- ifelse(test$price_cat == "Cara", 1, 0)
+```
+
+
+
