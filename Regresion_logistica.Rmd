@@ -1,6 +1,8 @@
 ---
 title: "Regresión logística"
-output: html_notebook
+output:
+  html_document:
+    df_print: paged
 ---
 
 ```{r carga de datos}
@@ -48,5 +50,58 @@ test$inter <- ifelse(test$price_cat == "Intermedia", 1, 0)
 test$cara <- ifelse(test$price_cat == "Cara", 1, 0)
 ```
 
+```{r parte 3}
 
 
+library(caret)
+library(car)
+library(corrplot)
+
+
+train$cara_factor <- factor(ifelse(train$cara == 1, "Si", "No"), levels = c("No", "Si"))
+test$cara_factor <- factor(ifelse(test$cara == 1, "Si", "No"), levels = c("No", "Si"))
+
+
+set.seed(123)
+
+# Configurar Validación Cruzada de 10 pliegues
+ctrl <- trainControl(method = "cv", 
+                     number = 10, 
+                     savePredictions = "final", 
+                     classProbs = TRUE)
+
+
+modelo_logistico <- train(cara_factor ~ accommodates + bedrooms + bathrooms_num + number_of_reviews, 
+                          data = train, 
+                          method = "glm", 
+                          family = "binomial", 
+                          trControl = ctrl)
+
+summary(modelo_logistico)
+
+
+predicciones_prob <- predict(modelo_logistico, newdata = train, type = "prob")
+predicciones_clase <- ifelse(predicciones_prob$Si >= 0.5, "Si", "No")
+```
+
+
+```{r parte 4}
+
+# 1. Determinación de Multicolinealidad en las variables mediante VIF
+cat("\n--- Análisis de Multicolinealidad (VIF) ---\n")
+vif_valores <- vif(modelo_logistico$finalModel)
+print(vif_valores)
+
+# 2. Análisis de Correlación de las variables del modelo
+vars_numericas <- train[, c("accommodates", "bedrooms", "bathrooms_num", "number_of_reviews")]
+matriz_cor <- cor(vars_numericas, use = "complete.obs")
+
+cat("\n--- Matriz de Correlación ---\n")
+corrplot(matriz_cor, method = "color", type = "upper", 
+         tl.col = "black", addCoef.col = "black", number.cex = 0.8)
+
+# 3. Especificar si el modelo se adapta bien a los datos 
+mcfadden_r2 <- with(summary(modelo_logistico$finalModel), 1 - deviance/null.deviance)
+cat("\n--- Bondad de Ajuste: Pseudo R-cuadrado (McFadden) ---\n")
+print(paste("Valor de ajuste:", round(mcfadden_r2, 4)))
+```
