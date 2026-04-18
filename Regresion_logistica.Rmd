@@ -15,6 +15,8 @@ library(car)
 library(corrplot)
 library(ggplot2)
 library(pROC)
+library(glmnet)
+library(bench)
 ```
 
 ```{r separacion de datos train/test}
@@ -242,3 +244,61 @@ ggplot(df_curvas, aes(x = Proporcion)) +
   theme_minimal() +
   theme(legend.position = "bottom")
 ```
+
+```{r tuneo de parámetros}
+set.seed(123)
+
+control <- trainControl(
+  method = "cv",
+  number = 5,
+  classProbs = TRUE
+)
+
+grid <- expand.grid(
+  alpha = c(0, 0.5, 1),   # 0 = Ridge, 1 = Lasso
+  lambda = seq(0.0001, 0.1, length = 5)
+)
+
+modelo_logit <- train(
+  factor(price_cat) ~ accommodates + bathrooms_num + bedrooms + beds +
+    host_response_rate + host_acceptance_rate +
+    calculated_host_listings_count + number_of_reviews +
+    reviews_per_month + review_scores_rating +
+    minimum_nights + availability_365 +
+    room_type + host_is_superhost + instant_bookable + bathroom_type,
+  data = train,
+  method = "glmnet",
+  trControl = control,
+  tuneGrid = grid,
+  preProcess = c("center", "scale")
+)
+
+modelo_logit
+plot(modelo_logit)
+```
+
+```{r Matriz de confusión}
+pred_logit <- predict(modelo_logit, newdata = test)
+
+cm_logit <- confusionMatrix(pred_logit, test$price_cat)
+
+cm_logit
+```
+
+```{r Profiling}
+mark(
+  train(
+    factor(price_cat) ~ accommodates + bathrooms_num + bedrooms + beds +
+      host_response_rate + host_acceptance_rate +
+      calculated_host_listings_count + number_of_reviews +
+      reviews_per_month + review_scores_rating +
+      minimum_nights + availability_365 +
+      room_type + host_is_superhost + instant_bookable + bathroom_type,
+    data = train,
+    method = "glmnet",
+    trControl = trainControl(method = "cv", number = 5),
+    preProcess = c("center", "scale")
+  )
+)
+```
+
