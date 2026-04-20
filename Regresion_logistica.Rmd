@@ -5,11 +5,11 @@ output:
     df_print: paged
 ---
 
-```{r carga de datos}
-load("listings_modificado.RData")
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
 ```
 
-```{r librerias, message=FALSE, warning=FALSE}
+```{r librerias}
 library(caret)
 library(car)
 library(corrplot)
@@ -17,181 +17,118 @@ library(ggplot2)
 library(pROC)
 library(glmnet)
 library(bench)
+library(nnet)
+library(MLmetrics)
 ```
 
-```{r separacion de datos train/test}
-set.seed(123)
+```{r carga de datos}
+load("listings_modificado.RData")
+```
 
+## Separación de datos
+
+```{r separacion}
+set.seed(123)
 muestra_idx <- sample(1:nrow(listings), size = 10000)
 muestra <- listings[muestra_idx, ]
-
 n <- nrow(muestra)
 train_idx <- sample(1:n, size = 0.7 * n)
-
 train <- muestra[train_idx, ]
 test  <- muestra[-train_idx, ]
 ```
 
-```{r variable categorica de precio}
+## Inciso 1: Variables dicotómicas
+
+```{r variable categorica}
 cuts <- quantile(train$price, probs = c(0.33, 0.66), na.rm = TRUE)
-
-train$price_cat <- cut(train$price,
-                       breaks = c(-Inf, cuts[1], cuts[2], Inf),
+train$price_cat <- cut(train$price, breaks = c(-Inf, cuts[1], cuts[2], Inf),
                        labels = c("Economica", "Intermedia", "Cara"))
-
-test$price_cat <- cut(test$price,
-                      breaks = c(-Inf, cuts[1], cuts[2], Inf),
-                      labels = c("Economica", "Intermedia", "Cara"))
+test$price_cat  <- cut(test$price,  breaks = c(-Inf, cuts[1], cuts[2], Inf),
+                       labels = c("Economica", "Intermedia", "Cara"))
 ```
 
-```{r variables dicotomicas}
-# -----------------------------------------------------------------------
-# INCISO 1: Variables dicotómicas (0/1) por cada categoría de precio
-# -----------------------------------------------------------------------
-
-# TRAIN
+```{r dicotomicas}
 train$econ  <- ifelse(train$price_cat == "Economica",  1, 0)
 train$inter <- ifelse(train$price_cat == "Intermedia", 1, 0)
 train$cara  <- ifelse(train$price_cat == "Cara",       1, 0)
+test$econ   <- ifelse(test$price_cat  == "Economica",  1, 0)
+test$inter  <- ifelse(test$price_cat  == "Intermedia", 1, 0)
+test$cara   <- ifelse(test$price_cat  == "Cara",       1, 0)
 
-# TEST — aplicar las mismas definiciones
-test$econ   <- ifelse(test$price_cat == "Economica",   1, 0)
-test$inter  <- ifelse(test$price_cat == "Intermedia",  1, 0)
-test$cara   <- ifelse(test$price_cat == "Cara",        1, 0)
-
-# Distribución de las variables dicotómicas en entrenamiento
-cat("Distribución variable 'cara' en train:\n")
-table(train$cara)
-cat("\nDistribución variable 'inter' en train:\n")
-table(train$inter)
-cat("\nDistribución variable 'econ' en train:\n")
 table(train$econ)
+table(train$inter)
+table(train$cara)
 ```
 
-```{r inciso3 modelo logistico, warning=FALSE}
-# -----------------------------------------------------------------------
-# INCISO 2 y 3: Modelo de regresión logística — ¿es cara la vivienda?
-# Se usan los mismos conjuntos train/test definidos arriba (set.seed(123)).
-# Se aplica validación cruzada de 10 pliegues y umbral de decisión 0.5.
-# -----------------------------------------------------------------------
+## Incisos 2 y 3: Modelo logístico binario
 
-# Convertir la variable respuesta a factor
+```{r modelo logistico}
 train$cara_factor <- factor(ifelse(train$cara == 1, "Si", "No"), levels = c("No", "Si"))
 test$cara_factor  <- factor(ifelse(test$cara  == 1, "Si", "No"), levels = c("No", "Si"))
 
-# Configurar validación cruzada de 10 pliegues
-ctrl <- trainControl(
-  method          = "cv",
-  number          = 10,
-  savePredictions = "final",
-  classProbs      = TRUE
-)
+ctrl <- trainControl(method = "cv", number = 10,
+                     savePredictions = "final", classProbs = TRUE)
 
 set.seed(123)
 modelo_logistico <- train(
   cara_factor ~ accommodates + bedrooms + bathrooms_num + number_of_reviews,
-  data      = train,
-  method    = "glm",
-  family    = "binomial",
-  trControl = ctrl
+  data = train, method = "glm", family = "binomial", trControl = ctrl
 )
 
-# Resumen del modelo
 summary(modelo_logistico)
 
-# Predicciones sobre train con umbral 0.5
 pred_train_prob  <- predict(modelo_logistico, newdata = train, type = "prob")
 pred_train_clase <- factor(ifelse(pred_train_prob$Si >= 0.5, "Si", "No"), levels = c("No", "Si"))
 ```
 
-```{r inciso4 analisis del modelo, warning=FALSE}
-# -----------------------------------------------------------------------
-# INCISO 4: Análisis del modelo — multicolinealidad, correlación, ajuste
-# -----------------------------------------------------------------------
+## Inciso 4: Análisis del modelo
 
-# 4a. Multicolinealidad: Factor de Inflación de Varianza (VIF)
-cat("--- Análisis de Multicolinealidad (VIF) ---\n")
-vif_valores <- vif(modelo_logistico$finalModel)
-print(vif_valores)
-# Interpretación: valores VIF < 5 indican ausencia de multicolinealidad problemática.
-
-# 4b. Significancia de los coeficientes
-cat("\n--- Coeficientes y significancia ---\n")
-print(summary(modelo_logistico$finalModel)$coefficients)
-
-# 4c. Correlación entre predictores
-vars_numericas <- train[, c("accommodates", "bedrooms", "bathrooms_num", "number_of_reviews")]
-matriz_cor <- cor(vars_numericas, use = "complete.obs")
-
-cat("\n--- Matriz de Correlación ---\n")
-print(round(matriz_cor, 3))
-
-corrplot(matriz_cor,
-         method      = "color",
-         type        = "upper",
-         tl.col      = "black",
-         addCoef.col = "black",
-         number.cex  = 0.8,
-         title       = "Correlación entre predictores")
-
-# 4d. Bondad de ajuste: Pseudo R² de McFadden
-mcfadden_r2 <- with(summary(modelo_logistico$finalModel),
-                    1 - deviance / null.deviance)
-cat("\n--- Pseudo R² de McFadden ---\n")
-cat("Valor:", round(mcfadden_r2, 4), "\n")
-# Interpretación: valores entre 0.2 y 0.4 indican buen ajuste en regresión logística.
+```{r vif}
+vif(modelo_logistico$finalModel)
 ```
 
-```{r inciso5 evaluacion en test, warning=FALSE}
-# -----------------------------------------------------------------------
-# INCISO 5: Evaluación del modelo sobre el conjunto de prueba
-# -----------------------------------------------------------------------
+```{r coeficientes}
+summary(modelo_logistico$finalModel)$coefficients
+```
 
-# Predicciones sobre test con umbral 0.5
+```{r correlacion}
+vars_numericas <- train[, c("accommodates", "bedrooms", "bathrooms_num", "number_of_reviews")]
+matriz_cor <- cor(vars_numericas, use = "complete.obs")
+round(matriz_cor, 3)
+
+corrplot(matriz_cor, method = "color", type = "upper",
+         tl.col = "black", addCoef.col = "black", number.cex = 0.8)
+```
+
+```{r mcfadden}
+mcfadden_r2 <- with(summary(modelo_logistico$finalModel), 1 - deviance / null.deviance)
+cat("Pseudo R² de McFadden:", round(mcfadden_r2, 4))
+```
+
+## Inciso 5: Evaluación en test
+
+```{r evaluacion test}
 pred_test_prob  <- predict(modelo_logistico, newdata = test, type = "prob")
 pred_test_clase <- factor(ifelse(pred_test_prob$Si >= 0.5, "Si", "No"), levels = c("No", "Si"))
 
-# Matriz de confusión en test
-cat("--- Matriz de Confusión (Test, umbral = 0.5) ---\n")
 cm_test <- confusionMatrix(pred_test_clase, test$cara_factor, positive = "Si")
-print(cm_test)
-
-# Métricas clave
-cat("\n--- Métricas de eficiencia en Test ---\n")
-cat("Accuracy   :", round(cm_test$overall["Accuracy"],    4), "\n")
-cat("Sensibilidad (Recall):", round(cm_test$byClass["Sensitivity"], 4), "\n")
-cat("Especificidad:        ", round(cm_test$byClass["Specificity"],  4), "\n")
-cat("Precision (PPV):      ", round(cm_test$byClass["Pos Pred Value"], 4), "\n")
-cat("F1 Score:             ", round(cm_test$byClass["F1"], 4), "\n")
+cm_test
 ```
 
-```{r inciso6 overfitting curvas de aprendizaje, warning=FALSE}
-# -----------------------------------------------------------------------
-# INCISO 6: Análisis de sobreajuste y curvas de aprendizaje
-# -----------------------------------------------------------------------
+## Inciso 6: Sobreajuste y curvas de aprendizaje
 
-# Error en entrenamiento (umbral 0.5)
-cm_train <- confusionMatrix(pred_train_clase, train$cara_factor, positive = "Si")
+```{r overfitting}
+cm_train    <- confusionMatrix(pred_train_clase, train$cara_factor, positive = "Si")
 error_train <- 1 - cm_train$overall["Accuracy"]
+error_test  <- 1 - cm_test$overall["Accuracy"]
 
-# Error en prueba
-error_test <- 1 - cm_test$overall["Accuracy"]
+cat("Error entrenamiento:", round(error_train, 4),
+    "\nError prueba:      ", round(error_test,  4),
+    "\nDiferencia:        ", round(abs(error_test - error_train), 4))
+```
 
-cat("--- Comparación de errores ---\n")
-cat("Error en entrenamiento:", round(error_train, 4), "\n")
-cat("Error en prueba:       ", round(error_test,  4), "\n")
-
-# Si la diferencia es pequeña (< 0.02) no hay sobreajuste significativo.
-diferencia <- abs(error_test - error_train)
-cat("Diferencia de errores: ", round(diferencia, 4), "\n")
-if (diferencia < 0.02) {
-  cat("Conclusión: No hay evidencia de sobreajuste. El modelo generaliza bien.\n")
-} else {
-  cat("Conclusión: Posible sobreajuste. El error en prueba supera al de entrenamiento.\n")
-}
-
-# Curvas de aprendizaje — entrenamos con tamaños crecientes del train
-tamaños   <- seq(0.1, 1.0, by = 0.1)
+```{r curvas aprendizaje}
+tamaños <- seq(0.1, 1.0, by = 0.1)
 errores_train_curva <- numeric(length(tamaños))
 errores_test_curva  <- numeric(length(tamaños))
 
@@ -201,104 +138,223 @@ for (i in seq_along(tamaños)) {
   idx_sub <- sample(1:nrow(train), size = n_sub)
   sub     <- train[idx_sub, ]
 
-  # Suprimir mensajes de convergencia para subconjuntos pequeños
   modelo_tmp <- suppressWarnings(
     train(cara_factor ~ accommodates + bedrooms + bathrooms_num + number_of_reviews,
-          data      = sub,
-          method    = "glm",
-          family    = "binomial",
+          data = sub, method = "glm", family = "binomial",
           trControl = trainControl(method = "none"))
   )
 
-  # Error en subconjunto de entrenamiento
   p_tr <- predict(modelo_tmp, newdata = sub, type = "prob")
   c_tr <- factor(ifelse(p_tr$Si >= 0.5, "Si", "No"), levels = c("No", "Si"))
   errores_train_curva[i] <- 1 - mean(c_tr == sub$cara_factor)
 
-  # Error en test completo
   p_te <- predict(modelo_tmp, newdata = test, type = "prob")
   c_te <- factor(ifelse(p_te$Si >= 0.5, "Si", "No"), levels = c("No", "Si"))
   errores_test_curva[i]  <- 1 - mean(c_te == test$cara_factor)
 }
 
-# Data frame para graficar
-df_curvas <- data.frame(
-  Proporcion = tamaños,
-  Train      = errores_train_curva,
-  Test       = errores_test_curva
-)
+df_curvas <- data.frame(Proporcion = tamaños,
+                        Train = errores_train_curva,
+                        Test  = errores_test_curva)
 
-# Graficar curvas de aprendizaje
 ggplot(df_curvas, aes(x = Proporcion)) +
   geom_line(aes(y = Train, colour = "Entrenamiento"), linewidth = 1) +
   geom_point(aes(y = Train, colour = "Entrenamiento"), size = 2) +
   geom_line(aes(y = Test, colour = "Prueba"), linewidth = 1, linetype = "dashed") +
   geom_point(aes(y = Test, colour = "Prueba"), size = 2) +
   scale_colour_manual(values = c("Entrenamiento" = "steelblue", "Prueba" = "tomato")) +
-  labs(
-    title   = "Curvas de Aprendizaje — Regresión Logística (¿Es cara?)",
-    x       = "Proporción del conjunto de entrenamiento utilizado",
-    y       = "Error de clasificación",
-    colour  = "Conjunto"
-  ) +
-  theme_minimal() +
-  theme(legend.position = "bottom")
+  labs(title = "Curvas de Aprendizaje — Regresión Logística",
+       x = "Proporción de entrenamiento", y = "Error de clasificación", colour = NULL) +
+  theme_minimal() + theme(legend.position = "bottom")
 ```
 
-```{r tuneo de parámetros}
+## Inciso 7: Tuneo del modelo
+
+```{r tuneo}
+ctrl_tune <- trainControl(method = "cv", number = 5, classProbs = TRUE,
+                          savePredictions = "final", summaryFunction = twoClassSummary)
+
+grid_tune <- expand.grid(alpha  = c(0, 0.25, 0.5, 0.75, 1),
+                         lambda = c(0.0001, 0.001, 0.01, 0.05, 0.1))
+
 set.seed(123)
-
-control <- trainControl(
-  method = "cv",
-  number = 5,
-  classProbs = TRUE
+modelo_tuneado <- train(
+  cara_factor ~ accommodates + bathrooms_num + bedrooms + beds +
+    number_of_reviews + reviews_per_month + review_scores_rating +
+    minimum_nights + availability_365 + calculated_host_listings_count,
+  data = train, method = "glmnet", trControl = ctrl_tune,
+  tuneGrid = grid_tune, metric = "ROC", preProcess = c("center", "scale")
 )
 
-grid <- expand.grid(
-  alpha = c(0, 0.5, 1),   # 0 = Ridge, 1 = Lasso
-  lambda = seq(0.0001, 0.1, length = 5)
-)
-
-modelo_logit <- train(
-  factor(price_cat) ~ accommodates + bathrooms_num + bedrooms + beds +
-    host_response_rate + host_acceptance_rate +
-    calculated_host_listings_count + number_of_reviews +
-    reviews_per_month + review_scores_rating +
-    minimum_nights + availability_365 +
-    room_type + host_is_superhost + instant_bookable + bathroom_type,
-  data = train,
-  method = "glmnet",
-  trControl = control,
-  tuneGrid = grid,
-  preProcess = c("center", "scale")
-)
-
-modelo_logit
-plot(modelo_logit)
+modelo_tuneado$bestTune
+plot(modelo_tuneado)
 ```
 
-```{r Matriz de confusión}
-pred_logit <- predict(modelo_logit, newdata = test)
+## Inciso 8: Matriz de confusión y profiling
 
-cm_logit <- confusionMatrix(pred_logit, test$price_cat)
+```{r matriz tuneado}
+pred_tuneado_prob  <- predict(modelo_tuneado, newdata = test, type = "prob")
+pred_tuneado_clase <- factor(ifelse(pred_tuneado_prob$Si >= 0.5, "Si", "No"),
+                              levels = c("No", "Si"))
 
-cm_logit
+cm_tuneado <- confusionMatrix(pred_tuneado_clase, test$cara_factor, positive = "Si")
+cm_tuneado
 ```
 
-```{r Profiling}
-mark(
-  train(
-    factor(price_cat) ~ accommodates + bathrooms_num + bedrooms + beds +
-      host_response_rate + host_acceptance_rate +
-      calculated_host_listings_count + number_of_reviews +
-      reviews_per_month + review_scores_rating +
-      minimum_nights + availability_365 +
-      room_type + host_is_superhost + instant_bookable + bathroom_type,
-    data = train,
-    method = "glmnet",
-    trControl = trainControl(method = "cv", number = 5),
-    preProcess = c("center", "scale")
+```{r profiling}
+bench::mark(
+  predict(modelo_tuneado, newdata = test, type = "prob"),
+  iterations = 10, check = FALSE
+)
+```
+
+## Inciso 9: Umbral de decisión — Índice de Youden
+
+```{r youden}
+roc_obj <- roc(as.numeric(test$cara_factor == "Si"), pred_tuneado_prob$Si, quiet = TRUE)
+cat("AUC:", round(auc(roc_obj), 4))
+
+coords_youden <- coords(roc_obj, x = "best", best.method = "youden",
+                        ret = c("threshold", "sensitivity", "specificity"))
+print(coords_youden)
+
+umbral_optimo     <- as.numeric(coords_youden["threshold"])
+pred_youden_clase <- factor(ifelse(pred_tuneado_prob$Si >= umbral_optimo, "Si", "No"),
+                             levels = c("No", "Si"))
+
+cm_youden <- confusionMatrix(pred_youden_clase, test$cara_factor, positive = "Si")
+cm_youden
+```
+
+```{r comparacion umbrales}
+data.frame(
+  Metrica       = c("Accuracy", "Sensibilidad", "Especificidad", "F1"),
+  Umbral_0.5    = c(round(cm_tuneado$overall["Accuracy"],    4),
+                    round(cm_tuneado$byClass["Sensitivity"], 4),
+                    round(cm_tuneado$byClass["Specificity"], 4),
+                    round(cm_tuneado$byClass["F1"],          4)),
+  Umbral_Youden = c(round(cm_youden$overall["Accuracy"],    4),
+                    round(cm_youden$byClass["Sensitivity"], 4),
+                    round(cm_youden$byClass["Specificity"], 4),
+                    round(cm_youden$byClass["F1"],          4))
+)
+```
+
+```{r curva roc}
+plot(roc_obj, col = "steelblue", lwd = 2, main = "Curva ROC — Modelo Tuneado")
+points(coords_youden["specificity"], coords_youden["sensitivity"],
+       pch = 19, col = "tomato", cex = 1.8)
+legend("bottomright",
+       legend = c("Curva ROC", paste0("Umbral Youden = ", round(umbral_optimo, 3))),
+       col = c("steelblue", "tomato"), lwd = c(2, NA), pch = c(NA, 19))
+```
+
+## Inciso 10: Comparación de modelos — AIC, BIC y métricas
+
+```{r aic bic}
+glm_base <- modelo_logistico$finalModel
+cat("AIC:", round(AIC(glm_base), 2), "\nBIC:", round(BIC(glm_base), 2))
+```
+
+```{r tabla modelos binarios}
+data.frame(
+  Modelo        = c("glm base (umbral 0.5)",
+                    "glmnet tuneado (umbral 0.5)",
+                    "glmnet tuneado (umbral Youden)"),
+  Accuracy      = c(round(cm_test$overall["Accuracy"],    4),
+                    round(cm_tuneado$overall["Accuracy"], 4),
+                    round(cm_youden$overall["Accuracy"],  4)),
+  Sensibilidad  = c(round(cm_test$byClass["Sensitivity"],    4),
+                    round(cm_tuneado$byClass["Sensitivity"], 4),
+                    round(cm_youden$byClass["Sensitivity"],  4)),
+  Especificidad = c(round(cm_test$byClass["Specificity"],    4),
+                    round(cm_tuneado$byClass["Specificity"], 4),
+                    round(cm_youden$byClass["Specificity"],  4)),
+  F1            = c(round(cm_test$byClass["F1"],    4),
+                    round(cm_tuneado$byClass["F1"], 4),
+                    round(cm_youden$byClass["F1"],  4))
+)
+```
+
+## Inciso 11: Modelo multinomial
+
+```{r multinomial}
+train$price_cat <- factor(train$price_cat, levels = c("Economica", "Intermedia", "Cara"))
+test$price_cat  <- factor(test$price_cat,  levels = c("Economica", "Intermedia", "Cara"))
+
+ctrl_multi <- trainControl(method = "cv", number = 5, classProbs = TRUE,
+                           savePredictions = "final", summaryFunction = multiClassSummary)
+
+grid_multi <- expand.grid(alpha  = c(0, 0.25, 0.5, 0.75, 1),
+                          lambda = c(0.0001, 0.001, 0.01, 0.05, 0.1))
+
+set.seed(123)
+modelo_multinomial <- train(
+  price_cat ~ accommodates + bathrooms_num + bedrooms + beds +
+    number_of_reviews + reviews_per_month + review_scores_rating +
+    minimum_nights + availability_365 + calculated_host_listings_count,
+  data = train, method = "glmnet", family = "multinomial",
+  trControl = ctrl_multi, tuneGrid = grid_multi,
+  metric = "Accuracy", preProcess = c("center", "scale")
+)
+
+modelo_multinomial$bestTune
+plot(modelo_multinomial)
+
+pred_multi <- predict(modelo_multinomial, newdata = test)
+cm_multi   <- confusionMatrix(pred_multi, test$price_cat)
+cm_multi
+```
+
+## Inciso 12: Comparación final con todos los algoritmos
+
+```{r comparacion final}
+tiempo_rl_binaria <- system.time(predict(modelo_tuneado,     newdata = test, type = "prob"))["elapsed"]
+tiempo_rl_multi   <- system.time(predict(modelo_multinomial, newdata = test))["elapsed"]
+
+tabla_final <- data.frame(
+  Modelo = c(
+    "Arbol base — Lab 4",
+    "Arbol Val. Cruzada — Lab 4",
+    "Arbol prof=9 — Lab 4",
+    "Random Forest 100 arboles — Lab 4",
+    "Naive Bayes — Lab 5",
+    "KNN k=7 — Lab 6",
+    "Reg. Logistica binaria tuneada — Lab 7",
+    "Reg. Logistica multinomial tuneada — Lab 7"
+  ),
+  Accuracy = c(
+    0.5687, 0.6107, 0.6286, 0.6697, 0.5700, 0.6217,
+    round(cm_tuneado$overall["Accuracy"], 4),
+    round(cm_multi$overall["Accuracy"],   4)
+  ),
+  Kappa = c(
+    0.3527, 0.4161, 0.4427, 0.5046, NA, 0.4321,
+    round(cm_tuneado$overall["Kappa"], 4),
+    round(cm_multi$overall["Kappa"],   4)
+  ),
+  Sens_Cara = c(
+    0.7079, NA, NA, NA, NA, 0.6746,
+    round(cm_tuneado$byClass["Sensitivity"], 4),
+    round(cm_multi$byClass["Class: Cara", "Sensitivity"], 4)
+  ),
+  Tiempo_pred_seg = c(
+    NA, NA, NA, NA, NA, NA,
+    round(tiempo_rl_binaria, 4),
+    round(tiempo_rl_multi,   4)
   )
 )
+
+print(tabla_final)
 ```
 
+```{r grafico comparacion}
+ggplot(tabla_final, aes(x = reorder(Modelo, Accuracy), y = Accuracy, fill = Accuracy)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = round(Accuracy, 3)), hjust = -0.1, size = 3) +
+  scale_fill_gradient(low = "steelblue", high = "tomato") +
+  coord_flip() +
+  labs(title = "Accuracy — Todos los modelos de clasificación", x = NULL, y = "Accuracy (Test)") +
+  theme_minimal() +
+  ylim(0, 0.80)
+```
